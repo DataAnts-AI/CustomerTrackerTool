@@ -2,49 +2,20 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import matplotlib.pyplot as plt
-from datetime import datetime
 
 # Initialize SQLite Database
 conn = sqlite3.connect("tracyos_data.db")
 cursor = conn.cursor()
 
-# Create Tables
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS customers (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT UNIQUE
-)
-""")
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS projects (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    customer_id INTEGER,
-    name TEXT,
-    deadline DATE,
-    budget REAL,
-    FOREIGN KEY (customer_id) REFERENCES customers (id)
-)
-""")
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS hours (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER,
-    hours REAL,
-    date TEXT DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (project_id) REFERENCES projects (id)
-)
-""")
-conn.commit()
-
-# Helper functions
+# Helper Functions
 def fetch_customers():
     return pd.read_sql_query("SELECT id, name FROM customers", conn)
 
 def fetch_projects():
     return pd.read_sql_query("""
-        SELECT p.id, p.name, p.deadline, p.budget, c.name AS customer
+        SELECT p.id, p.name AS project, c.name AS customer, p.deadline, p.budget
         FROM projects p
-        JOIN customers c ON p.customer_id = c.id
+        LEFT JOIN customers c ON p.customer_id = c.id
     """, conn)
 
 def fetch_reports():
@@ -59,23 +30,28 @@ def fetch_reports():
 # Streamlit UI
 st.title("TracyOS - Customer & Project Management")
 
-menu = st.sidebar.radio("Navigate", ["View & Track", "Add Customers & Projects", "Reports", "Dashboard"])
+menu = st.sidebar.radio("Navigate", ["View & Track", "Add Customers & Projects", "Reports", "Dashboard", "Debug"])
 
 # Tab 1: View & Track Customers and Projects
 if menu == "View & Track":
     st.header("Customer & Project Tracking")
     projects = fetch_projects()
     if not projects.empty:
+        st.subheader("Existing Customers and Projects")
         st.dataframe(projects)
-        project_id = st.selectbox("Select Project to Log Hours", projects["name"])
-        project_row = projects[projects["name"] == project_id]
-        project_id = project_row["id"].values[0]
+
+        project_name = st.selectbox("Select Project to Log Hours", projects["project"])
+        selected_project = projects[projects["project"] == project_name]
+        project_id = int(selected_project["id"].values[0])  # Ensure correct data type
         
         hours = st.number_input("Enter Hours Worked", min_value=0.0, step=0.1)
         if st.button("Log Hours"):
-            cursor.execute("INSERT INTO hours (project_id, hours) VALUES (?, ?)", (project_id, hours))
-            conn.commit()
-            st.success(f"{hours} hours logged for project: {project_row['name'].values[0]}")
+            try:
+                cursor.execute("INSERT INTO hours (project_id, hours) VALUES (?, ?)", (project_id, hours))
+                conn.commit()
+                st.success(f"{hours} hours logged for project: {project_name}")
+            except Exception as e:
+                st.error(f"Failed to log hours: {str(e)}")
     else:
         st.warning("No projects found. Add projects first.")
 
@@ -94,20 +70,26 @@ elif menu == "Add Customers & Projects":
     st.subheader("Add New Project")
     customers = fetch_customers()
     if not customers.empty:
-        customer_id = st.selectbox("Select Customer", customers["name"])
-        customer_row = customers[customers["name"] == customer_id]
-        customer_id = customer_row["id"].values[0]
+        customer_name = st.selectbox("Select Customer", customers["name"])
+        selected_customer = customers[customers["name"] == customer_name]
+        if not selected_customer.empty:
+            customer_id = int(selected_customer["id"].values[0])  # Ensure correct data type
 
-        project_name = st.text_input("Project Name")
-        deadline = st.date_input("Deadline")
-        budget = st.number_input("Budget (in $)", min_value=0.0, step=0.1)
-        if st.button("Add Project"):
-            cursor.execute("""
-                INSERT INTO projects (customer_id, name, deadline, budget)
-                VALUES (?, ?, ?, ?)
-            """, (customer_id, project_name, deadline, budget))
-            conn.commit()
-            st.success(f"Project '{project_name}' added successfully!")
+            project_name = st.text_input("Project Name")
+            deadline = st.date_input("Deadline")
+            budget = st.number_input("Budget (in $)", min_value=0.0, step=0.1)
+            if st.button("Add Project"):
+                try:
+                    cursor.execute("""
+                        INSERT INTO projects (customer_id, name, deadline, budget)
+                        VALUES (?, ?, ?, ?)
+                    """, (customer_id, project_name, deadline, budget))
+                    conn.commit()
+                    st.success(f"Project '{project_name}' added successfully for customer '{customer_name}'!")
+                except sqlite3.IntegrityError as e:
+                    st.error(f"Failed to add project: {str(e)}")
+        else:
+            st.error("Invalid customer selection. Please try again.")
     else:
         st.warning("No customers found. Add customers first.")
 
@@ -141,6 +123,34 @@ elif menu == "Dashboard":
         st.pyplot(fig)
     else:
         st.warning("No data to display.")
+
+# Debug Tab
+elif menu == "Debug":
+    st.header("Debug Database Entries")
+    
+    # Display Customers
+    st.subheader("Customers Table")
+    customers = fetch_customers()
+    if not customers.empty:
+        st.dataframe(customers)
+    else:
+        st.warning("No customers found.")
+
+    # Display Projects
+    st.subheader("Projects Table (Detailed)")
+    detailed_projects = fetch_projects()
+    if not detailed_projects.empty:
+        st.dataframe(detailed_projects)
+    else:
+        st.warning("No projects found.")
+
+    # Display Hours
+    st.subheader("Hours Table")
+    hours = pd.read_sql_query("SELECT * FROM hours", conn)
+    if not hours.empty:
+        st.dataframe(hours)
+    else:
+        st.warning("No hours logged yet.")
 
 # Close database connection
 conn.close()
